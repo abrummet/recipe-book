@@ -31,9 +31,55 @@ function joinSteps(rows: string[]): string[] {
   return out.map((s) => s.replace(STEP_MARKER, '').trim()).filter(Boolean);
 }
 
+const NO_BREAK_AFTER = /\b(?:approx|tbsp|tbs|tsp|oz|lb|lbs|pkg|qt|pt|gal|no|vs|etc|deg|temp|med|lg|sm|inc|dr|mr|mrs|st)$/i;
+
+/** "Mix the flour. Add eggs! Bake." -> three sentences. Leaves "2 tbsp. butter" alone. */
+export function splitSentences(text: string): string[] {
+  const parts = text.trim().split(/([.!?]+["')\]]*)\s+/);
+  const out: string[] = [];
+  let current = '';
+  for (let i = 0; i < parts.length; i += 2) {
+    const body = parts[i];
+    const end = parts[i + 1] || '';
+    current += body + end;
+    const next = parts[i + 2] || '';
+    const justANumber = /^(?:step\s*)?\d+$/i.test(current.trim().replace(/[.)]+$/, ''));
+    const canBreak = end && /^["'(]?[A-Z0-9]/.test(next) && !NO_BREAK_AFTER.test(body) && !justANumber && current.trim().length >= 10;
+    if (canBreak || i + 2 >= parts.length) { if (current.trim()) out.push(current.trim()); current = ''; }
+    else current += ' ';
+  }
+  return out;
+}
+
+/** For the review screen: every sentence becomes its own step. */
+export function oneStepPerSentence(stepsText: string): string {
+  return stepsText.split('\n').flatMap((line) => splitSentences(line)).filter(Boolean).join('\n');
+}
+
+/** For the review screen: "2 cups flour, 1 tsp salt and 3 eggs" becomes three lines. */
+export function oneIngredientPerLine(ingsText: string): string {
+  return ingsText
+    .split('\n')
+    .flatMap((line) => line.split(/\s*[,;]\s+(?=\d|[½¼¾⅓⅔⅛])|\s+and\s+(?=\d|[½¼¾⅓⅔⅛])/))
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** A paragraph with "1. ... 2. ..." written inline is split at each number; long paragraphs at each sentence. */
+function breakUpBlock(step: string): string[] {
+  const numbered = step.split(/\s+(?=(?:step\s*)?\d{1,2}\s*[.)]\s+[A-Z])/i).map((s) => s.replace(STEP_MARKER, '').trim()).filter(Boolean);
+  if (numbered.length > 1) return numbered;
+  const sentences = splitSentences(step);
+  return sentences.length >= 3 || step.length > 220 ? sentences : [step];
+}
+
+const END_OF_RECIPE = /^(notes?|recipe notes?|nutrition(?:al)?(?: facts| information| info)?|tips?(?: and tricks)?|reviews?|comments?|leave a (?:comment|reply|review)|you (?:might|may) also like|related(?: recipes)?|more recipes|did you make this.*|rate this recipe|tried this recipe.*)\s*:?$/i;
+const PAGE_CLUTTER = /^(skip to .*|menu|search|log ?in|sign ?in|subscribe|home|print|pin|share|save|jump to recipe|print recipe|pin recipe|advertisement|cook mode.*|prevent your screen.*|\d+x)$/i;
+
 /** Best-effort sorting of loose text into a name, ingredients and steps. The user fixes the rest. */
 export function textToDraft(text: string): Draft {
-  const rows = text.split(/\r?\n/).map((l) => l.replace(/^[•\-*·▪◦●□☐]\s*/, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const rows = text.split(/\r?\n/).map((l) => l.replace(/^[•\-*·▪◦●□☐▢✓]\s*/, '').replace(/\s+/g, ' ').trim()).filter((l) => l && !PAGE_CLUTTER.test(l));
   const draft = emptyDraft();
   if (!rows.length) return draft;
 
@@ -67,8 +113,12 @@ export function textToDraft(text: string): Draft {
     }
   }
   ings = ings.filter((r) => !/^(?:serves|servings|yield|yields|makes)\b/i.test(r));
-  draft.ings = ings.join('\n');
-  draft.steps = joinSteps(steps).join('\n');
+  // Text copied from a web page carries on past the recipe (notes, nutrition, comments): stop there.
+  const cut = (list: string[]) => { const end = list.findIndex((r) => END_OF_RECIPE.test(r)); return end >= 0 ? list.slice(0, end) : list; };
+  ings = cut(ings);
+  steps = cut(steps);
+  draft.ings = oneIngredientPerLine(ings.join('\n'));
+  draft.steps = joinSteps(steps).flatMap(breakUpBlock).join('\n');
   return draft;
 }
 
@@ -205,6 +255,7 @@ export async function readLink(rawUrl: string): Promise<Draft> {
     if (status === 404) throw new Error('Link import is not switched on yet (the fetch-recipe helper has not been added in Supabase).');
     let detail = '';
     try { detail = (await (error as any).context?.json())?.error || ''; } catch { /* no detail */ }
+    if (/\((401|403|429|503)\)/.test(detail)) throw new Error('This site does not let apps read its pages. Open the page in Safari, copy the recipe text, and use "Paste text" instead.');
     throw new Error(detail || 'Could not open that page. Check the address and your connection.');
   }
   const draft = pageToDraft(String(data?.html || ''), url);

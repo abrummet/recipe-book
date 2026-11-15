@@ -3,7 +3,7 @@ import type { Ctx } from './App';
 import { shrinkPhoto, type Recipe } from './data';
 import { addDays, fmtAmt, fmtQty, ingredientsToText, isoDate, lines, parseIngredient, parseStep } from './format';
 import { PHOTO_BUCKET, supabase } from './supabase';
-import { readLink, readPdf, readPhotos, textToDraft, type Draft } from './importers';
+import { oneIngredientPerLine, oneStepPerSentence, readLink, readPdf, readPhotos, textToDraft, type Draft } from './importers';
 
 // ---------------------------------------------------------------- small pieces
 
@@ -672,6 +672,7 @@ export function AddMenu({ ctx }: { ctx: Ctx }) {
         <form className="stack" style={{ gap: 16 }} onSubmit={(e) => { e.preventDefault(); run('Opening the page', () => readLink(url)); }}>
           <TopBar title="Paste a link" onBack={() => setMode('')} />
           {error && <div className="error">{error}</div>}
+          {error && <button type="button" className="btn dark" onClick={() => { setMode('paste'); setError(''); }}>Paste the text instead</button>}
           <input type="url" aria-label="Recipe web address" placeholder="https://" value={url} onChange={(e) => setUrl(e.target.value)} autoCapitalize="off" autoCorrect="off" required />
           <div className="muted">The app reads the page and keeps only the recipe.</div>
           <button className="btn primary" disabled={!url.trim()}>Get the recipe</button>
@@ -681,6 +682,7 @@ export function AddMenu({ ctx }: { ctx: Ctx }) {
       {mode === 'paste' && (
         <>
           <TopBar title="Paste text" onBack={() => setMode('')} />
+          <div className="muted">From a web page: open it in Safari, tap the page-menu button in the address bar and choose Show Reader if offered, then select all, copy, and paste here. Extra text around the recipe is fine.</div>
           <textarea rows={12} aria-label="Recipe text" placeholder="Paste the whole recipe here" value={text} onChange={(e) => setText(e.target.value)} />
           <button className="btn primary" disabled={!text.trim()}
             onClick={() => ctx.go({ s: 'edit', draft: { ...textToDraft(text), notice: 'Sorted from the text you pasted. Check it over before saving.' } })}>
@@ -703,6 +705,12 @@ export function Edit({ ctx, r, draft }: { ctx: Ctx; r?: Recipe; draft?: Draft })
   const [tagIds, setTagIds] = useState<string[]>(r ? tagIdsOf(ctx, r.id) : []);
   const [newTag, setNewTag] = useState('');
   const [busy, setBusy] = useState(false);
+  const [undo, setUndo] = useState<{ ings: string; steps: string } | null>(null);
+  const tidy = (next: { ings?: string; steps?: string }) => {
+    setUndo({ ings, steps });
+    if (next.ings !== undefined) setIngs(next.ings);
+    if (next.steps !== undefined) setSteps(next.steps);
+  };
   const back = () => ctx.go(r ? { s: 'detail', id: r.id } : { s: 'add' });
   const cardPhotos = useMemo(() => (draft?.photos || []).map((p) => URL.createObjectURL(p)), [draft]);
   useEffect(() => () => cardPhotos.forEach((u) => URL.revokeObjectURL(u)), [cardPhotos]);
@@ -786,11 +794,23 @@ export function Edit({ ctx, r, draft }: { ctx: Ctx; r?: Recipe; draft?: Draft })
       <Field label="Ingredients" hint="one per line">
         <textarea rows={7} value={ings} onChange={(e) => setIngs(e.target.value)} placeholder={'1 1/2 cups flour\n2 tbsp butter\n1 egg'} autoCapitalize="off" />
       </Field>
+      {oneIngredientPerLine(ings) !== ings.trim() && (
+        <button className="btn small" onClick={() => tidy({ ings: oneIngredientPerLine(ings) })}>Split ingredients onto separate lines</button>
+      )}
       <div className="stack">
         <Field label="Steps" hint="one per line">
           <textarea rows={7} value={steps} onChange={(e) => setSteps(e.target.value)} placeholder={'Heat the oven to 350°F.\nBake for 20 minutes.'} />
         </Field>
-        <div className="muted">Times written in a step, like "20 minutes", become timer suggestions.</div>
+        <div className="muted">Each line is one step ({lines(steps).length} now). Press return inside a step to split it, or delete the line break to join two. Times like "20 minutes" become timer suggestions.</div>
+        <div className="wrap">
+          {oneStepPerSentence(steps) !== lines(steps).join('\n') && (
+            <button className="btn small" onClick={() => tidy({ steps: oneStepPerSentence(steps) })}>One step per sentence</button>
+          )}
+          {lines(steps).length > 1 && (
+            <button className="btn small" onClick={() => tidy({ steps: lines(steps).join(' ') })}>Join into one step</button>
+          )}
+          {undo && <button className="btn small" onClick={() => { setIngs(undo.ings); setSteps(undo.steps); setUndo(null); }}>Undo</button>}
+        </div>
       </div>
       <div className="stack">
         <div style={{ fontWeight: 600 }}>Tags</div>
